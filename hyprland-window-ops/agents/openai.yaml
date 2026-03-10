@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hyprland Window Ops"
+  short_description: "Reliable Hyprland MCP window operations."
+  default_prompt: "Use this skill to list windows, move windows by class/title/workspace, normalize address selectors, and verify post-change state via Hyprland MCP."

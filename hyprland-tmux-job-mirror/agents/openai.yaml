@@ -1,0 +1,4 @@
+interface:
+  display_name: "TMUX Job Mirror"
+  short_description: "Run long jobs in tmux with a visible mirrored terminal."
+  default_prompt: "Use this skill only for long-running jobs (big builds, servers, batch/polling tasks) that need live terminal monitoring and dual interrupt control; do not use it for routine short command execution."

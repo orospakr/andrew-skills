@@ -1,0 +1,4 @@
+interface:
+  display_name: "Workspace Launcher"
+  short_description: "Launch apps on target workspaces via Hyprland MCP."
+  default_prompt: "Use this skill to launch terminals, agents, and tools onto specified workspaces with verify-after-launch checks."
