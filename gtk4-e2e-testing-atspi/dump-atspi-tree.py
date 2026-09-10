@@ -38,7 +38,7 @@ Examples:
     python3 dump-atspi-tree.py
 
     # Dump specific application
-    python3 dump-atspi-tree.py --app-name "Wordspace"
+    python3 dump-atspi-tree.py --app-name "MyApp"
 
     # Dump to JSON for parsing
     python3 dump-atspi-tree.py --format json --output tree.json

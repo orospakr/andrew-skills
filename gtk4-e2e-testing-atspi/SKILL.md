@@ -34,49 +34,58 @@ sudo pacman -S xorg-server-xvfb fluxbox dbus at-spi2-core python-gobject xorg-xw
 
 ## Core Setup
 
-### 1. Isolated Environment Structure
+### 1. Quick Start (Parameterized)
 
-The key is isolation via `dbus-run-session`:
+The fastest way - use environment variables to customize without editing:
 
 ```bash
 #!/bin/bash
 set -e
 
-# Cleanup first
-pkill -9 Xvfb fluxbox at-spi wordspace 2>/dev/null || true
-rm -f /tmp/.X99-lock /tmp/.X100-lock
+# Configuration (set these or pass as env vars)
+APP_NAME="${APP_NAME:-myapp}"           # Your GTK4 app name
+APP_PATH="${APP_PATH:-./myapp}"       # Path to your app binary
+DISPLAY_NUM="${DISPLAY_NUM:-100}"     # X11 display number
+WAIT_TIME="${WAIT_TIME:-8}"           # Seconds to wait for app startup
 
-# 1. Start Xvfb (no D-Bus yet)
-export DISPLAY=:100
-Xvfb :100 -screen 0 1920x1080x24 -ac -noreset &
-XVFB_PID=$!
+# Cleanup
+pkill -9 Xvfb fluxbox at-spi "$APP_NAME" 2>/dev/null || true
+rm -f "/tmp/.X${DISPLAY_NUM}-lock"
+
+# Start Xvfb
+export DISPLAY=":${DISPLAY_NUM}"
+Xvfb ":${DISPLAY_NUM}" -screen 0 1920x1080x24 -ac -noreset &
 sleep 2
 
-# 2. Everything else inside dbus-run-session
-dbus-run-session -- bash -c '
-  export DISPLAY=:100
+# Run in isolated D-Bus session
+dbus-run-session -- bash -c "
+  export DISPLAY=:${DISPLAY_NUM}
   
-  # Start AT-SPI bus
+  # Start AT-SPI services
   /usr/lib/at-spi-bus-launcher --launch-immediately &
-  sleep 2
-  
-  # CRITICAL: Start registry daemon too
   /usr/lib/at-spi2-registryd &
-  sleep 2
-  
-  # Start window manager
   fluxbox &
   sleep 2
   
-  # Run your app
-  ./target/debug/your-gtk-app &
-  sleep 8
+  # Run the app
+  \${APP_PATH} &
+  sleep \${WAIT_TIME}
   
-  # Now AT-SPI works!
-  python3 dump-atspi-tree.py --app-name your-app
-'
+  # Dump accessibility tree
+  python3 dump-atspi-tree.py --app-name '\${APP_NAME}' --format json
+"
+```
 
-kill $XVFB_PID
+**Usage:**
+```bash
+# Quick test with defaults
+./atspi-test.sh
+
+# Test specific app
+APP_NAME="MyApp" APP_PATH="./target/debug/my-app" ./atspi-test.sh
+
+# Different display, longer wait
+DISPLAY_NUM=99 WAIT_TIME=12 ./atspi-test.sh
 ```
 
 ### 2. Critical Environment Variables
@@ -132,7 +141,113 @@ for i in range(desktop.get_child_count()):
     dump_tree(app)
 ```
 
-## Common Issues
+## Automation Patterns (No Script Rewriting)
+
+The `dump-atspi-tree.py` script is designed to be used as-is. Here are common patterns:
+
+### Pattern 1: Shell Script Wrapper
+Create a one-liner that configures everything:
+
+```bash
+#!/bin/bash
+cd /path/to/your/project
+export APP_NAME="YourApp"
+export APP_PATH="./target/debug/your-app"
+
+# Run the generic test
+/path/to/gtk4-e2e-testing-atspi/atspi-xvfb-setup.sh "$APP_PATH"
+```
+
+### Pattern 2: Python Automation (Using the Script)
+Call the tree dumper from your Python automation:
+
+```python
+import subprocess
+import json
+
+def get_accessibility_tree(app_name):
+    """Get accessibility tree without rewriting the script"""
+    result = subprocess.run(
+        ['python3', 'dump-atspi-tree.py', '--app-name', app_name, '--format', 'json'],
+        capture_output=True,
+        text=True
+    )
+    if result.returncode == 0:
+        return json.loads(result.stdout)
+    return None
+
+def click_button_via_atspi(app_name, button_name):
+    """Click a button by name using AT-SPI"""
+    script = f'''
+import gi
+gi.require_version("Atspi", "2.0")
+from gi.repository import Atspi
+
+def click(node_name):
+    desktop = Atspi.get_desktop(0)
+    for i in range(desktop.get_child_count()):
+        app = desktop.get_child_at_index(i)
+        if "{app_name}".lower() in (app.get_name() or "").lower():
+            def find(node, depth=0):
+                if node_name.lower() in (node.get_name() or "").lower():
+                    node.do_action(0)
+                    return True
+                for j in range(node.get_child_count()):
+                    if find(node.get_child_at_index(j), depth+1):
+                        return True
+                return False
+            if find(app):
+                print("clicked")
+                return
+click("{button_name}")
+'''
+    subprocess.run(['python3', '-c', script])
+```
+
+### Pattern 3: Makefile Integration
+
+```makefile
+ATSPI_DIR := /path/to/gtk4-e2e-testing-atspi
+
+# Run tests against your app
+test-ui:
+	APP_NAME="MyApp" APP_PATH="./target/debug/my-app" \
+	  $(ATSPI_DIR)/atspi-xvfb-setup.sh
+
+# Get tree dump
+dump-tree:
+	python3 $(ATSPI_DIR)/dump-atspi-tree.py --app-name "MyApp" --format json
+```
+
+### Pattern 4: CI/CD (GitHub Actions Example)
+
+```yaml
+- name: Test GTK4 UI
+  run: |
+    export APP_NAME="MyApp"
+    export APP_PATH="./target/debug/my-app"
+    export DISPLAY_NUM=99
+    
+    # Copy scripts
+    cp /path/to/gtk4-e2e-testing-atspi/*.py .
+    
+    # Run tests
+    APP_NAME="$APP_NAME" APP_PATH="$APP_PATH" ./atspi-xvfb-setup.sh
+    
+    # Capture artifacts
+    python3 dump-atspi-tree.py --app-name "$APP_NAME" --format json --output tree.json
+    xwd -root -out screenshot.xwd
+  env:
+    APP_NAME: MyApp
+    APP_PATH: ./target/debug/my-app
+```
+
+### Key Principle
+
+**Never rewrite the scripts** - pass configuration via:
+1. Environment variables (`APP_NAME`, `APP_PATH`, `DISPLAY_NUM`)
+2. Command-line arguments (`--app-name`, `--format`, `--output`)
+3. Shell variables in your wrapper scripts
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
@@ -144,14 +259,18 @@ for i in range(desktop.get_child_count()):
 
 ## AI Integration Workflow
 
-1. **Start Environment**
+1. **Start Environment** (pass app dynamically)
    ```bash
-   ./atspi-xvfb-setup.sh "./your-app"
+   APP_NAME="YourApp" APP_PATH="./your-app" ./atspi-xvfb-setup.sh
    ```
 
-2. **Dump Tree for AI**
+2. **Dump Tree for AI** (generic - any app name)
    ```bash
-   python3 dump-atspi-tree.py --app-name YourApp --format json > ui_tree.json
+   # Auto-detect the app name from running apps
+   python3 dump-atspi-tree.py --format json > ui_tree.json
+   
+   # Or specify explicitly
+   python3 dump-atspi-tree.py --app-name "$APP_NAME" --format json > ui_tree.json
    ```
 
 3. **AI Decision Loop**
@@ -160,10 +279,41 @@ for i in range(desktop.get_child_count()):
    AT-SPI click or xdotool click → Screenshot → verify
    ```
 
-4. **Click via AT-SPI**
+4. **Click via AT-SPI** (works with any accessible button)
    ```python
-   button = find_node_by_name(app, "Import Media")
-   button.do_action(0)  # First action is usually "click"
+   # In your automation script
+   import subprocess
+   result = subprocess.run(
+       ['python3', '-c', '''
+import gi
+gi.require_version("Atspi", "2.0")
+from gi.repository import Atspi
+
+def find_and_click(app_name, button_name):
+    desktop = Atspi.get_desktop(0)
+    for i in range(desktop.get_child_count()):
+        app = desktop.get_child_at_index(i)
+        if app_name.lower() in (app.get_name() or "").lower():
+            def find_button(node, depth=0):
+                if button_name.lower() in (node.get_name() or "").lower():
+                    return node
+                for j in range(node.get_child_count()):
+                    child = node.get_child_at_index(j)
+                    result = find_button(child, depth+1)
+                    if result:
+                        return result
+                return None
+            button = find_button(app)
+            if button:
+                button.do_action(0)  # Click
+                return True
+    return False
+
+find_and_click("'" + app_name + "'", "'" + button_name + "'")
+       '''],
+       capture_output=True
+   )
+   '''])
    ```
 
 ## Files Reference
@@ -171,49 +321,56 @@ for i in range(desktop.get_child_count()):
 - `atspi-xvfb-setup.sh` - Full setup script with error handling
 - `dump-atspi-tree.py` - Tree dumper with text/JSON/XML output
 - `ATSPI_SETUP_GUIDE.md` - Detailed technical documentation
-- `ATSPI_WORDSPACE_USAGE.md` - Project-specific examples
+- `ATSPI_MYAPP_USAGE.md` - Project-specific examples
 
 ## Example: Complete Test
 
 ```bash
 #!/bin/bash
+
+# Configuration via environment variables
+APP_NAME="${APP_NAME:-myapp}"
+APP_PATH="${APP_PATH:-./myapp}"
+DISPLAY_NUM="${DISPLAY_NUM:-100}"
+OUTPUT_DIR="${OUTPUT_DIR:-/tmp}"
+
 unset WAYLAND_DISPLAY
 
 # 1. Setup
-Xvfb :100 -screen 0 1920x1080x24 -ac &
+export DISPLAY=":${DISPLAY_NUM}"
+Xvfb ":${DISPLAY_NUM}" -screen 0 1920x1080x24 -ac &
 sleep 2
 
 # 2. Run in isolated dbus
-dbus-run-session -- bash -c '
-  export DISPLAY=:100
+dbus-run-session -- bash -c "
+  export DISPLAY=:${DISPLAY_NUM}
   /usr/lib/at-spi-bus-launcher --launch-immediately &
   /usr/lib/at-spi2-registryd &
   fluxbox &
   sleep 2
   
-  ./wordspace-gtk &
+  \${APP_PATH} &
   sleep 8
   
-  # Verify AT-SPI
-  python3 -c "
+  # Verify AT-SPI - list all apps
+  python3 -c '
 import gi
-gi.require_version('Atspi', '2.0')
+gi.require_version(\"Atspi\", \"2.0\")
 from gi.repository import Atspi
 desktop = Atspi.get_desktop(0)
 for i in range(desktop.get_child_count()):
     app = desktop.get_child_at_index(i)
     print(f\"Found: {app.get_name()}\")
-  "
+  '
   
-  # Screenshot
-  xwd -root -out /tmp/test.xwd
-  magick /tmp/test.xwd /tmp/test.png
-  echo "Screenshot: /tmp/test.png"
-'
+  # Screenshot and tree dump
+  xwd -root -out ${OUTPUT_DIR}/test.xwd
+  magick ${OUTPUT_DIR}/test.xwd ${OUTPUT_DIR}/test.png
+  python3 dump-atspi-tree.py --app-name '\${APP_NAME}' --format json --output ${OUTPUT_DIR}/tree.json
+"
 
 # Cleanup
-pkill Xvfb
-```
+pkill -9 Xvfb
 
 ## Key Insights
 
